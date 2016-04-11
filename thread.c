@@ -1,150 +1,84 @@
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <time.h>
 #include <pthread.h>
 
-FILE *input, *output;
+#include "lib/merge_sort.h"
+#include "lib/file_handler.h"
+#include "lib/utils.h"
+
+#define OUTPUT_FILE "./thread_output"
 
 typedef struct {
     unsigned int *inputs;
     int length;
+    struct timespec start, end;
 } threadData;
 
-void mergeSort(unsigned int inputs[], int length);
+int totalThreadCount = 0;
+long totalCreateTime = 0;
 
-void merge(unsigned int inputs[],
-           unsigned int leftInputs[],
-           unsigned int rightInputs[],
-           int leftLength,
-           int rightLength
-);
+// function declarations
+void mergeSortInThread(threadData *data);
+void childExecution(unsigned int *inputs, int length);
 
-void printArray(unsigned int arr[], int length) {
-    for (int i = 0; i < length; i ++) {
-        printf("%d\n", arr[i]);
-    }
-}
+int main(const int argc, const char *argv[]) {
 
-void swap(unsigned int *a, unsigned int *b) {
-    unsigned int temp = *a;
-    *a = *b;
-    *b = temp;
-}
-
-void mergeSortInThread(threadData *_data);
-
-int main() {
-
+    const char *inputFileName = argv[1];
     unsigned int inputs[10000];
-    unsigned int value;
-    int length = 0;
-    size_t count;
+    int length;
 
-    input = fopen("./input", "rb");
-    output = fopen("./thread_output", "wb");
+    struct timespec start, end;
 
-    while (!feof(input)) {
-        count = fread(&value, 4, 1, input);
+    long totalExecutionTime = 0;
 
-        if (count > 0) {
-            inputs[length++] = value;
-        }
-    }
+    // start counting execution time
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
-    mergeSort(inputs, length);
+    length = readArrayFromInputFile(inputFileName, inputs);
 
-    for (int i = 0; i < length; i++) {
-        fwrite(&inputs[i], 4, 1, output);
-    }
+    mergeSort(inputs, length, childExecution);
+
+    writeIntoOutputFile(OUTPUT_FILE, inputs, length);
+
+    // end counting
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    totalExecutionTime = getTimeDiff(&start, &end);
+
+    printf("Total execution time:\t%.9f\n", toSecond(totalExecutionTime));
+    printf("Total process count: %d, Average pthread_create() time: %ld\n",
+           totalThreadCount,
+           (totalCreateTime / totalThreadCount)
+    );
 
     return 0;
 }
 
-// it returns length of handled array
-void mergeSort(unsigned int inputs[], int length) {
+void childExecution(unsigned int *leftInputs, int leftLength) {
+    threadData data = {leftInputs, leftLength};
+    pthread_t thread;
 
-    // for sort
-    unsigned int *leftInputs, *rightInputs;
+    // start counting thread creation time
+    clock_gettime(CLOCK_MONOTONIC, &data.start);
 
-    // mid point index
-    int leftLength, rightLength;
-
-    // iteration index
-    int i;
-
-    // thread related
-    threadData leftData, rightData;
-    pthread_t leftThread, rightThread;
-
-    if ((length == 2) && (inputs[0] > inputs[1])) {
-        swap(&inputs[0], &inputs[1]);
-    }
-    if (length <= 2) {
-        return;
-    }
-
-    // split
-
-    leftLength = length / 2;
-    rightLength = length - leftLength;
-
-    // forks
-
-    leftInputs = malloc(leftLength * sizeof(unsigned int));
-    rightInputs = malloc(rightLength * sizeof(unsigned int));
-
-    for (i = 0; i < leftLength; i++) {
-        leftInputs[i] = inputs[i];
-    }
-
-    for (i = leftLength; i < length; i++) {
-        rightInputs[i - leftLength] = inputs[i];
-    }
-
-    leftData.inputs = leftInputs;
-    leftData.length = leftLength;
-
-    rightData.inputs = rightInputs;
-    rightData.length = rightLength;
-
-    // executes thread
-    pthread_create(&leftThread, NULL, (void *) &mergeSortInThread, (void *) &leftData);
-    pthread_create(&rightThread, NULL, (void *) &mergeSortInThread, (void *) &rightData);
-
-    // merge
-    pthread_join(leftThread, NULL);
-    pthread_join(rightThread, NULL);
-
-    merge(inputs, leftInputs, rightInputs, leftLength, rightLength);
-
-    free(leftInputs);
-    free(rightInputs);
+    pthread_create(&thread, NULL, (void *) &mergeSortInThread, (void *) &data);
+    pthread_join(thread, NULL);
 }
 
-void mergeSortInThread(threadData *_data) {
-    threadData data = *_data;
-    mergeSort(data.inputs, data.length);
-}
+void mergeSortInThread(threadData *data) {
 
-void merge(unsigned int inputs[],
-           unsigned int leftInputs[],
-           unsigned int rightInputs[],
-           int leftLength,
-           int rightLength
-) {
-    int i = 0;
-    int j = 0;
-    int k = 0;
+    // end counting thread creation time
+    clock_gettime(CLOCK_MONOTONIC, &(data->end));
 
-    while ((i < leftLength) && (j < rightLength)) {
-        inputs[k++] = (leftInputs[i] < rightInputs[j]) ?
-                      leftInputs[i++] :
-                      rightInputs[j++];
-    }
+    // add +1 to total thread count
+    totalThreadCount++;
 
-    while (i < leftLength) {
-        inputs[k++] = leftInputs[i++];
-    }
-    while (j < rightLength) {
-        inputs[k++] = rightInputs[j++];
-    }
+    // add thread creation time to global variable
+    totalCreateTime += getTimeDiff(&(data->start), &(data->end));
+
+    mergeSort(data->inputs, data->length, childExecution);
 }

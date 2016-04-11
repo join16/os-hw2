@@ -8,3 +8,9 @@ process
 thread
 
 .idea
+
+node_modules
+
+.secret.json
+
+2013147544_*

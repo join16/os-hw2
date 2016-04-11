@@ -1,159 +1,106 @@
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <time.h>
 
-FILE *input, *output;
+#include "lib/merge_sort.h"
+#include "lib/file_handler.h"
+#include "lib/utils.h"
 
-void mergeSort(unsigned int inputs[], int length);
+#define OUTPUT_FILE "./process_output"
 
-void merge(unsigned int inputs[],
-           unsigned int leftInputs[],
-           unsigned int rightInputs[],
-           int leftLength,
-           int rightLength
-);
+int totalProcessCount = 0;
+long totalForkTime = 0;
 
-void printArray(unsigned int arr[], int length) {
-    for (int i = 0; i < length; i ++) {
-        printf("%d\n", arr[i]);
-    }
-}
+void childExecution(unsigned int *inputs, int length);
 
-void swap(unsigned int *a, unsigned int *b) {
-    unsigned int temp = *a;
-    *a = *b;
-    *b = temp;
-}
+int main(const int argc, const char *argv[]) {
 
-int main() {
-
+    const char *inputFileName = argv[1];
     unsigned int inputs[10000];
-    unsigned int value;
-    int length = 0;
-    size_t count;
-    struct timespec before, after;
+    int length;
 
-    input = fopen("./input", "rb");
-    output = fopen("./process_output", "wb");
+    struct timespec start, end;
 
-    while (!feof(input)) {
-        count = fread(&value, 4, 1, input);
+    long totalExecutionTime;
 
-        if (count > 0) {
-            inputs[length++] = value;
-        }
-    }
+    // start counting
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
-    mergeSort(inputs, length);
+    length = readArrayFromInputFile(inputFileName, inputs);
 
-    for (int i = 0; i < length; i++) {
-        fwrite(&inputs[i], 4, 1, output);
-    }
+    mergeSort(inputs, length, childExecution);
+
+    writeIntoOutputFile(OUTPUT_FILE, inputs, length);
+
+    // end counting
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    totalExecutionTime = getTimeDiff(&start, &end);
+
+    printf("Total execution time:\t%.9f\n", toSecond(totalExecutionTime));
+    printf("Total process count: %d, Average fork() time: %ld\n",
+           totalProcessCount,
+           (totalForkTime / totalProcessCount)
+    );
 
     return 0;
 }
 
-// it returns length of handled array
-void mergeSort(unsigned int inputs[], int length) {
+void childExecution(unsigned int *leftInputs, int leftLength) {
 
-    // for sort
-    unsigned int *leftInputs, *rightInputs;
+    int fd[2];
 
-    // mid point index
-    int leftLength, rightLength;
+    int processCountOfChild;
+    long forkTimeOfChild;
 
-    // iteration index
-    int i;
-    int fdLeft[2], fdRight[2];
-    int totalProcess;
+    struct timespec start, end;
 
-    pid_t p1, p2;
+    pipe(fd);
 
-    if ((length == 2) && (inputs[0] > inputs[1])) {
-        swap(&inputs[0], &inputs[1]);
-    }
-    if (length <= 2) {
-        return;
-    }
+    // start counting time
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
-    // split
+    pid_t p = fork();
 
-    leftLength = length / 2;
-    rightLength = length - leftLength;
+    // end counting time
+    clock_gettime(CLOCK_MONOTONIC, &end);
 
-    // forks
+    if (p == 0) {
+        // child process
 
-    pipe(fdLeft);
-    pipe(fdRight);
+        // child process cannot use fd[0] (read)
+        close(fd[0]);
 
-    p1 = fork();
+        // set process count, forkTime of child
+        totalProcessCount = 1;
+        totalForkTime = getTimeDiff(&start, &end);
 
-    if (p1 == 0) {
-        // left child
-        leftInputs = malloc(leftLength * sizeof(unsigned int));
-        for (i = 0; i < leftLength; i++) {
-            leftInputs[i] = inputs[i];
-        }
+        mergeSort(leftInputs, leftLength, childExecution);
 
-        mergeSort(leftInputs, leftLength);
-        // send
-        write(fdLeft[1], leftInputs, leftLength * sizeof(unsigned int));
+        write(fd[1], leftInputs, leftLength * sizeof(unsigned int));
+        write(fd[1], &totalProcessCount, sizeof(totalProcessCount));
+        write(fd[1], &totalForkTime, sizeof(totalForkTime));
+
+        close(fd[1]);
+
         free(leftInputs);
+
         exit(0);
-
     } else {
-        p2 = fork();
 
-        if (p2 == 0) {
-            rightInputs = malloc(rightLength * sizeof(unsigned int));
-            // right child
-            for (i = leftLength; i < length; i++) {
-                rightInputs[i - leftLength] = inputs[i];
-            }
-            mergeSort(rightInputs, rightLength);
-            // send
-            write(fdRight[1], rightInputs, rightLength * sizeof(unsigned int));
-            free(rightInputs);
-            exit(0);
+        // parent process cannot use fd[1] (write)
+        close(fd[1]);
 
-        } else {
-            leftInputs = malloc(leftLength * sizeof(unsigned int));
-            rightInputs = malloc(rightLength * sizeof(unsigned int));
-        };
-    }
+        read(fd[0], leftInputs, leftLength * sizeof(unsigned int));
+        read(fd[0], &processCountOfChild, sizeof(processCountOfChild));
+        read(fd[0], &forkTimeOfChild, sizeof(forkTimeOfChild));
 
-    // merge
-    read(fdLeft[0], leftInputs, leftLength * sizeof(unsigned int));
-    read(fdRight[0], rightInputs, rightLength * sizeof(unsigned int));
+        close(fd[0]);
 
-    merge(inputs, leftInputs, rightInputs, leftLength, rightLength);
-
-    close(fdLeft[0]);
-    close(fdRight[0]);
-    free(leftInputs);
-    free(rightInputs);
-}
-
-void merge(unsigned int inputs[],
-           unsigned int leftInputs[],
-           unsigned int rightInputs[],
-           int leftLength,
-           int rightLength
-) {
-    int i = 0;
-    int j = 0;
-    int k = 0;
-
-    while ((i < leftLength) && (j < rightLength)) {
-        inputs[k++] = (leftInputs[i] < rightInputs[j]) ?
-                      leftInputs[i++] :
-                      rightInputs[j++];
-    }
-
-    while (i < leftLength) {
-        inputs[k++] = leftInputs[i++];
-    }
-    while (j < rightLength) {
-        inputs[k++] = rightInputs[j++];
+        totalProcessCount += processCountOfChild;
+        totalForkTime += forkTimeOfChild;
     }
 }
